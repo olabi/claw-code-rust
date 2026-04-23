@@ -17,3 +17,9 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_panics_doc = "allow"
 missing_errors_doc = "allow"
+
+[profile.release]
+opt-level = 0        # 최적화를 아예 끔 (디버그 수준)
+debug = true         # 디버그 정보 포함
+incremental = false  # 증분 빌드 끔 (가끔 꼬임의 원인)
+codegen-units = 1    # 병렬 컴파일을 끄고 순차 컴파일 (메모리 사용 안정화)

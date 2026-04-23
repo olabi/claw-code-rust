@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+use api::StreamExtPad;
 
 use api::{
     read_base_url, AnthropicClient, ContentBlockDelta, InputContentBlock, InputMessage,

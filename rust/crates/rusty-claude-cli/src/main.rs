@@ -33,6 +33,7 @@ use runtime::{
 };
 use serde_json::json;
 use tools::{execute_tool, mvp_tool_specs, ToolSpec};
+use api::StreamExtPad;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 fn max_tokens_for_model(model: &str) -> u32 {

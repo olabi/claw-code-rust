@@ -1,7 +1,7 @@
 mod bash;
 mod bootstrap;
 mod compact;
-mod config;
+pub mod config;
 mod conversation;
 mod file_ops;
 mod hooks;
@@ -9,7 +9,7 @@ mod json;
 mod mcp;
 mod mcp_client;
 mod mcp_stdio;
-mod oauth;
+pub mod oauth;
 mod permissions;
 mod prompt;
 mod remote;
