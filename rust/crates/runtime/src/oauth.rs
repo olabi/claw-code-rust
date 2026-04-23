@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::OAuthConfig;
 
+/// Persisted OAuth access token bundle used by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthTokenSet {
     pub access_token: String,
@@ -17,6 +18,7 @@ pub struct OAuthTokenSet {
     pub scopes: Vec<String>,
 }
 
+/// PKCE verifier/challenge pair generated for an OAuth authorization flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PkceCodePair {
     pub verifier: String,
@@ -24,6 +26,7 @@ pub struct PkceCodePair {
     pub challenge_method: PkceChallengeMethod,
 }
 
+/// Challenge algorithms supported by the local PKCE helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PkceChallengeMethod {
     S256,
@@ -38,6 +41,7 @@ impl PkceChallengeMethod {
     }
 }
 
+/// Parameters needed to build an authorization URL for browser-based login.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthAuthorizationRequest {
     pub authorize_url: String,
@@ -50,6 +54,7 @@ pub struct OAuthAuthorizationRequest {
     pub extra_params: BTreeMap<String, String>,
 }
 
+/// Request body for exchanging an OAuth authorization code for tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthTokenExchangeRequest {
     pub grant_type: &'static str,
@@ -60,6 +65,7 @@ pub struct OAuthTokenExchangeRequest {
     pub state: String,
 }
 
+/// Request body for refreshing an existing OAuth token set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthRefreshRequest {
     pub grant_type: &'static str,
@@ -68,6 +74,7 @@ pub struct OAuthRefreshRequest {
     pub scopes: Vec<String>,
 }
 
+/// Parsed query parameters returned to the local OAuth callback endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthCallbackParams {
     pub code: Option<String>,
@@ -324,12 +331,19 @@ fn generate_random_token(bytes: usize) -> io::Result<String> {
 }
 
 fn credentials_home_dir() -> io::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("CLAUDE_CONFIG_HOME") {
+    if let Some(path) = std::env::var_os("CLAW_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var_os("HOME")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".claude"))
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "HOME is not set (on Windows, set USERPROFILE or HOME, \
+                 or use CLAW_CONFIG_HOME to point directly at the config directory)",
+            )
+        })?;
+    Ok(PathBuf::from(home).join(".claw"))
 }
 
 fn read_credentials_root(path: &PathBuf) -> io::Result<Map<String, Value>> {
@@ -442,7 +456,7 @@ fn decode_hex(byte: u8) -> Result<u8, String> {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(format!("invalid percent-encoding byte: {byte}")),
+        _ => Err(format!("invalid percent byte: {byte}")),
     }
 }
 
@@ -541,7 +555,7 @@ mod tests {
     fn oauth_credentials_round_trip_and_clear_preserves_other_fields() {
         let _guard = env_lock();
         let config_home = temp_config_home();
-        std::env::set_var("CLAUDE_CONFIG_HOME", &config_home);
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
         let path = credentials_path().expect("credentials path");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         std::fs::write(&path, "{\"other\":\"value\"}\n").expect("seed credentials");
@@ -567,7 +581,7 @@ mod tests {
         assert!(cleared.contains("\"other\": \"value\""));
         assert!(!cleared.contains("\"oauth\""));
 
-        std::env::remove_var("CLAUDE_CONFIG_HOME");
+        std::env::remove_var("CLAW_CONFIG_HOME");
         std::fs::remove_dir_all(config_home).expect("cleanup temp dir");
     }
 

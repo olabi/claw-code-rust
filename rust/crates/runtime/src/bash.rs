@@ -8,12 +8,14 @@ use tokio::process::Command as TokioCommand;
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 
+use crate::lane_events::{LaneEvent, ShipMergeMethod, ShipProvenance};
 use crate::sandbox::{
     build_linux_sandbox_command, resolve_sandbox_status_for_request, FilesystemIsolationMode,
     SandboxConfig, SandboxStatus,
 };
 use crate::ConfigLoader;
 
+/// Input schema for the built-in bash execution tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BashCommandInput {
     pub command: String,
@@ -33,6 +35,7 @@ pub struct BashCommandInput {
     pub allowed_mounts: Option<Vec<String>>,
 }
 
+/// Output returned from a bash tool invocation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BashCommandOutput {
     pub stdout: String,
@@ -64,6 +67,7 @@ pub struct BashCommandOutput {
     pub sandbox_status: Option<SandboxStatus>,
 }
 
+/// Executes a shell command with the requested sandbox settings.
 pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
     let cwd = env::current_dir()?;
     let sandbox_status = sandbox_status_for_input(&input, &cwd);
@@ -99,11 +103,76 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
     runtime.block_on(execute_bash_async(input, sandbox_status, cwd))
 }
 
+/// Detect git push to main and emit ship provenance event
+fn detect_and_emit_ship_prepared(command: &str) {
+    let trimmed = command.trim();
+    // Simple detection: git push with main/master
+    if trimmed.contains("git push") && (trimmed.contains("main") || trimmed.contains("master")) {
+        // Emit ship.prepared event
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let provenance = ShipProvenance {
+            source_branch: get_current_branch().unwrap_or_else(|| "unknown".to_string()),
+            base_commit: get_head_commit().unwrap_or_default(),
+            commit_count: 0, // Would need to calculate from range
+            commit_range: "unknown..HEAD".to_string(),
+            merge_method: ShipMergeMethod::DirectPush,
+            actor: get_git_actor().unwrap_or_else(|| "unknown".to_string()),
+            pr_number: None,
+        };
+        let _event = LaneEvent::ship_prepared(format!("{}", now), &provenance);
+        // Log to stderr as interim routing before event stream integration
+        eprintln!(
+            "[ship.prepared] branch={} -> main, commits={}, actor={}",
+            provenance.source_branch, provenance.commit_count, provenance.actor
+        );
+    }
+}
+
+fn get_current_branch() -> Option<String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn get_head_commit() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn get_git_actor() -> Option<String> {
+    let name = Command::new("git")
+        .args(["config", "user.name"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
+    Some(name)
+}
+
 async fn execute_bash_async(
     input: BashCommandInput,
     sandbox_status: SandboxStatus,
     cwd: std::path::PathBuf,
 ) -> io::Result<BashCommandOutput> {
+    // Detect and emit ship provenance for git push operations
+    detect_and_emit_ship_prepared(&input.command);
+    
     let mut command = prepare_tokio_command(&input.command, &cwd, &sandbox_status, true);
 
     let output_result = if let Some(timeout_ms) = input.timeout {
@@ -134,8 +203,8 @@ async fn execute_bash_async(
     };
 
     let (output, interrupted) = output_result;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout = truncate_output(&String::from_utf8_lossy(&output.stdout));
+    let stderr = truncate_output(&String::from_utf8_lossy(&output.stderr));
     let no_output_expected = Some(stdout.trim().is_empty() && stderr.trim().is_empty());
     let return_code_interpretation = output.status.code().and_then(|code| {
         if code == 0 {
@@ -279,5 +348,55 @@ mod tests {
         .expect("bash command should execute");
 
         assert!(!output.sandbox_status.expect("sandbox status").enabled);
+    }
+}
+
+/// Maximum output bytes before truncation (16 KiB, matching upstream).
+const MAX_OUTPUT_BYTES: usize = 16_384;
+
+/// Truncate output to `MAX_OUTPUT_BYTES`, appending a marker when trimmed.
+fn truncate_output(s: &str) -> String {
+    if s.len() <= MAX_OUTPUT_BYTES {
+        return s.to_string();
+    }
+    // Find the last valid UTF-8 boundary at or before MAX_OUTPUT_BYTES
+    let mut end = MAX_OUTPUT_BYTES;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = s[..end].to_string();
+    truncated.push_str("\n\n[output truncated — exceeded 16384 bytes]");
+    truncated
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+
+    #[test]
+    fn short_output_unchanged() {
+        let s = "hello world";
+        assert_eq!(truncate_output(s), s);
+    }
+
+    #[test]
+    fn long_output_truncated() {
+        let s = "x".repeat(20_000);
+        let result = truncate_output(&s);
+        assert!(result.len() < 20_000);
+        assert!(result.ends_with("[output truncated — exceeded 16384 bytes]"));
+    }
+
+    #[test]
+    fn exact_boundary_unchanged() {
+        let s = "a".repeat(MAX_OUTPUT_BYTES);
+        assert_eq!(truncate_output(&s), s);
+    }
+
+    #[test]
+    fn one_over_boundary_truncated() {
+        let s = "a".repeat(MAX_OUTPUT_BYTES + 1);
+        let result = truncate_output(&s);
+        assert!(result.contains("[output truncated"));
     }
 }

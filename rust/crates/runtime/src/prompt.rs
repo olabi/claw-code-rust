@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{ConfigError, ConfigLoader, RuntimeConfig};
+use crate::git_context::GitContext;
 
+/// Errors raised while assembling the final system prompt.
 #[derive(Debug)]
 pub enum PromptBuildError {
     Io(std::io::Error),
@@ -34,23 +36,28 @@ impl From<ConfigError> for PromptBuildError {
     }
 }
 
+/// Marker separating static prompt scaffolding from dynamic runtime context.
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
+/// Human-readable default frontier model name embedded into generated prompts.
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
 const MAX_INSTRUCTION_FILE_CHARS: usize = 4_000;
 const MAX_TOTAL_INSTRUCTION_CHARS: usize = 12_000;
 
+/// Contents of an instruction file included in prompt construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextFile {
     pub path: PathBuf,
     pub content: String,
 }
 
+/// Project-local context injected into the rendered system prompt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectContext {
     pub cwd: PathBuf,
     pub current_date: String,
     pub git_status: Option<String>,
     pub git_diff: Option<String>,
+    pub git_context: Option<GitContext>,
     pub instruction_files: Vec<ContextFile>,
 }
 
@@ -66,6 +73,7 @@ impl ProjectContext {
             current_date: current_date.into(),
             git_status: None,
             git_diff: None,
+            git_context: None,
             instruction_files,
         })
     }
@@ -77,10 +85,12 @@ impl ProjectContext {
         let mut context = Self::discover(cwd, current_date)?;
         context.git_status = read_git_status(&context.cwd);
         context.git_diff = read_git_diff(&context.cwd);
+        context.git_context = GitContext::detect(&context.cwd);
         Ok(context)
     }
 }
 
+/// Builder for the runtime system prompt and dynamic environment sections.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SystemPromptBuilder {
     output_style_name: Option<String>,
@@ -184,6 +194,7 @@ impl SystemPromptBuilder {
     }
 }
 
+/// Formats each item as an indented bullet for prompt sections.
 #[must_use]
 pub fn prepend_bullets(items: Vec<String>) -> Vec<String> {
     items.into_iter().map(|item| format!(" - {item}")).collect()
@@ -203,8 +214,8 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
         for candidate in [
             dir.join("CLAUDE.md"),
             dir.join("CLAUDE.local.md"),
-            dir.join(".claude").join("CLAUDE.md"),
-            dir.join(".claude").join("instructions.md"),
+            dir.join(".claw").join("CLAUDE.md"),
+            dir.join(".claw").join("instructions.md"),
         ] {
             push_context_file(&mut files, candidate)?;
         }
@@ -292,10 +303,26 @@ fn render_project_context(project_context: &ProjectContext) -> String {
         lines.push("Git status snapshot:".to_string());
         lines.push(status.clone());
     }
+    if let Some(ref gc) = project_context.git_context {
+        if !gc.recent_commits.is_empty() {
+            lines.push(String::new());
+            lines.push("Recent commits (last 5):".to_string());
+            for c in &gc.recent_commits {
+                lines.push(format!("  {} {}", c.hash, c.subject));
+            }
+        }
+    }
     if let Some(diff) = &project_context.git_diff {
         lines.push(String::new());
         lines.push("Git diff snapshot:".to_string());
         lines.push(diff.clone());
+    }
+    if let Some(git_context) = &project_context.git_context {
+        let rendered = git_context.render();
+        if !rendered.is_empty() {
+            lines.push(String::new());
+            lines.push(rendered);
+        }
     }
     lines.join("\n")
 }
@@ -401,6 +428,7 @@ fn collapse_blank_lines(content: &str) -> String {
     result
 }
 
+/// Loads config and project context, then renders the system prompt text.
 pub fn load_system_prompt(
     cwd: impl Into<PathBuf>,
     current_date: impl Into<String>,
@@ -421,7 +449,7 @@ fn render_config_section(config: &RuntimeConfig) -> String {
     let mut lines = vec!["# Runtime config".to_string()];
     if config.loaded_entries().is_empty() {
         lines.extend(prepend_bullets(vec![
-            "No Claw Code settings files loaded.".to_string(),
+            "No Claw Code settings files loaded.".to_string()
         ]));
         return lines.join("\n");
     }
@@ -513,27 +541,34 @@ mod tests {
         crate::test_env_lock()
     }
 
+    fn ensure_valid_cwd() {
+        if std::env::current_dir().is_err() {
+            std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))
+                .expect("test cwd should be recoverable");
+        }
+    }
+
     #[test]
     fn discovers_instruction_files_from_ancestor_chain() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
-        fs::create_dir_all(nested.join(".claude")).expect("nested claude dir");
+        fs::create_dir_all(nested.join(".claw")).expect("nested claw dir");
         fs::write(root.join("CLAUDE.md"), "root instructions").expect("write root instructions");
         fs::write(root.join("CLAUDE.local.md"), "local instructions")
             .expect("write local instructions");
         fs::create_dir_all(root.join("apps")).expect("apps dir");
-        fs::create_dir_all(root.join("apps").join(".claude")).expect("apps claude dir");
+        fs::create_dir_all(root.join("apps").join(".claw")).expect("apps claw dir");
         fs::write(root.join("apps").join("CLAUDE.md"), "apps instructions")
             .expect("write apps instructions");
         fs::write(
-            root.join("apps").join(".claude").join("instructions.md"),
+            root.join("apps").join(".claw").join("instructions.md"),
             "apps dot claude instructions",
         )
         .expect("write apps dot claude instructions");
-        fs::write(nested.join(".claude").join("CLAUDE.md"), "nested rules")
+        fs::write(nested.join(".claw").join("CLAUDE.md"), "nested rules")
             .expect("write nested rules");
         fs::write(
-            nested.join(".claude").join("instructions.md"),
+            nested.join(".claw").join("instructions.md"),
             "nested instructions",
         )
         .expect("write nested instructions");
@@ -593,13 +628,15 @@ mod tests {
     #[test]
     fn displays_context_paths_compactly() {
         assert_eq!(
-            display_context_path(Path::new("/tmp/project/.claude/CLAUDE.md")),
+            display_context_path(Path::new("/tmp/project/.claw/CLAUDE.md")),
             "CLAUDE.md"
         );
     }
 
     #[test]
     fn discover_with_git_includes_status_snapshot() {
+        let _guard = env_lock();
+        ensure_valid_cwd();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         std::process::Command::new("git")
@@ -623,7 +660,91 @@ mod tests {
     }
 
     #[test]
+    fn discover_with_git_includes_recent_commits_and_renders_them() {
+        // given: a git repo with three commits and a current branch
+        let _guard = env_lock();
+        ensure_valid_cwd();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        std::process::Command::new("git")
+            .args(["init", "--quiet", "-b", "main"])
+            .current_dir(&root)
+            .status()
+            .expect("git init should run");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "tests@example.com"])
+            .current_dir(&root)
+            .status()
+            .expect("git config email should run");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Runtime Prompt Tests"])
+            .current_dir(&root)
+            .status()
+            .expect("git config name should run");
+        for (file, message) in [
+            ("a.txt", "first commit"),
+            ("b.txt", "second commit"),
+            ("c.txt", "third commit"),
+        ] {
+            fs::write(root.join(file), "x\n").expect("write commit file");
+            std::process::Command::new("git")
+                .args(["add", file])
+                .current_dir(&root)
+                .status()
+                .expect("git add should run");
+            std::process::Command::new("git")
+                .args(["commit", "-m", message, "--quiet"])
+                .current_dir(&root)
+                .status()
+                .expect("git commit should run");
+        }
+        fs::write(root.join("d.txt"), "staged\n").expect("write staged file");
+        std::process::Command::new("git")
+            .args(["add", "d.txt"])
+            .current_dir(&root)
+            .status()
+            .expect("git add staged should run");
+
+        // when: discovering project context with git auto-include
+        let context =
+            ProjectContext::discover_with_git(&root, "2026-03-31").expect("context should load");
+        let rendered = SystemPromptBuilder::new()
+            .with_os("linux", "6.8")
+            .with_project_context(context.clone())
+            .render();
+
+        // then: branch, recent commits and staged files are present in context
+        let gc = context
+            .git_context
+            .as_ref()
+            .expect("git context should be present");
+        let commits: String = gc
+            .recent_commits
+            .iter()
+            .map(|c| c.subject.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(commits.contains("first commit"));
+        assert!(commits.contains("second commit"));
+        assert!(commits.contains("third commit"));
+        assert_eq!(gc.recent_commits.len(), 3);
+
+        let status = context.git_status.as_deref().expect("status snapshot");
+        assert!(status.contains("## main"));
+        assert!(status.contains("A  d.txt"));
+
+        assert!(rendered.contains("Recent commits (last 5):"));
+        assert!(rendered.contains("first commit"));
+        assert!(rendered.contains("Git status snapshot:"));
+        assert!(rendered.contains("## main"));
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn discover_with_git_includes_diff_snapshot_for_tracked_changes() {
+        let _guard = env_lock();
+        ensure_valid_cwd();
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
         std::process::Command::new("git")
@@ -667,20 +788,21 @@ mod tests {
     #[test]
     fn load_system_prompt_reads_claude_files_and_config() {
         let root = temp_dir();
-        fs::create_dir_all(root.join(".claude")).expect("claude dir");
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::write(root.join("CLAUDE.md"), "Project rules").expect("write instructions");
         fs::write(
-            root.join(".claude").join("settings.json"),
+            root.join(".claw").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("write settings");
 
         let _guard = env_lock();
+        ensure_valid_cwd();
         let previous = std::env::current_dir().expect("cwd");
         let original_home = std::env::var("HOME").ok();
-        let original_claude_home = std::env::var("CLAUDE_CONFIG_HOME").ok();
+        let original_claw_home = std::env::var("CLAW_CONFIG_HOME").ok();
         std::env::set_var("HOME", &root);
-        std::env::set_var("CLAUDE_CONFIG_HOME", root.join("missing-home"));
+        std::env::set_var("CLAW_CONFIG_HOME", root.join("missing-home"));
         std::env::set_current_dir(&root).expect("change cwd");
         let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8")
             .expect("system prompt should load")
@@ -695,10 +817,10 @@ mod tests {
         } else {
             std::env::remove_var("HOME");
         }
-        if let Some(value) = original_claude_home {
-            std::env::set_var("CLAUDE_CONFIG_HOME", value);
+        if let Some(value) = original_claw_home {
+            std::env::set_var("CLAW_CONFIG_HOME", value);
         } else {
-            std::env::remove_var("CLAUDE_CONFIG_HOME");
+            std::env::remove_var("CLAW_CONFIG_HOME");
         }
 
         assert!(prompt.contains("Project rules"));
@@ -709,10 +831,10 @@ mod tests {
     #[test]
     fn renders_claude_code_style_sections_with_project_context() {
         let root = temp_dir();
-        fs::create_dir_all(root.join(".claude")).expect("claude dir");
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
         fs::write(root.join("CLAUDE.md"), "Project rules").expect("write CLAUDE.md");
         fs::write(
-            root.join(".claude").join("settings.json"),
+            root.join(".claw").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("write settings");
@@ -751,9 +873,9 @@ mod tests {
     fn discovers_dot_claude_instructions_markdown() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
-        fs::create_dir_all(nested.join(".claude")).expect("nested claude dir");
+        fs::create_dir_all(nested.join(".claw")).expect("nested claw dir");
         fs::write(
-            nested.join(".claude").join("instructions.md"),
+            nested.join(".claw").join("instructions.md"),
             "instruction markdown",
         )
         .expect("write instructions.md");
@@ -762,7 +884,7 @@ mod tests {
         assert!(context
             .instruction_files
             .iter()
-            .any(|file| file.path.ends_with(".claude/instructions.md")));
+            .any(|file| file.path.ends_with(".claw/instructions.md")));
         assert!(
             render_instruction_files(&context.instruction_files).contains("instruction markdown")
         );

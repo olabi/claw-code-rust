@@ -18,6 +18,12 @@ impl UpstreamPaths {
         }
     }
 
+    /// Returns the repository root path.
+    #[must_use]
+    pub fn repo_root(&self) -> &Path {
+        &self.repo_root
+    }
+
     #[must_use]
     pub fn from_workspace_dir(workspace_dir: impl AsRef<Path>) -> Self {
         let workspace_dir = workspace_dir
@@ -74,11 +80,7 @@ fn upstream_repo_candidates(primary_repo_root: &Path) -> Vec<PathBuf> {
         candidates.push(ancestor.join("clawd-code"));
     }
 
-    candidates.push(
-        primary_repo_root
-            .join("reference-source")
-            .join("claw-code"),
-    );
+    candidates.push(primary_repo_root.join("reference-source").join("claw-code"));
     candidates.push(primary_repo_root.join("vendor").join("claw-code"));
 
     let mut deduped = Vec::new();
