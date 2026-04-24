@@ -493,7 +493,21 @@ impl StreamState {
         }
 
         for choice in chunk.choices {
-            if let Some(content) = choice.delta.content.filter(|value| !value.is_empty()) {
+            let ChunkDelta {
+                content,
+                reasoning,
+                reasoning_content,
+                tool_calls,
+            } = choice.delta;
+            // Prefer `content`; fall back to `reasoning` / `reasoning_content` for thinking
+            // backends (e.g. Ollama Qwen3) that stream tokens in the reasoning channel with
+            // an empty `content` field. Without this fallback the stream finishes with zero
+            // text emitted and the CLI reports "assistant stream produced no content".
+            let text = content
+                .filter(|value| !value.is_empty())
+                .or_else(|| reasoning.filter(|value| !value.is_empty()))
+                .or_else(|| reasoning_content.filter(|value| !value.is_empty()));
+            if let Some(text) = text {
                 if !self.text_started {
                     self.text_started = true;
                     events.push(StreamEvent::ContentBlockStart(ContentBlockStartEvent {
@@ -505,11 +519,11 @@ impl StreamState {
                 }
                 events.push(StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
                     index: 0,
-                    delta: ContentBlockDelta::TextDelta { text: content },
+                    delta: ContentBlockDelta::TextDelta { text },
                 }));
             }
 
-            for tool_call in choice.delta.tool_calls {
+            for tool_call in tool_calls {
                 let state = self.tool_calls.entry(tool_call.index).or_default();
                 state.apply(tool_call);
                 let block_index = state.block_index();
@@ -735,6 +749,13 @@ struct ChunkChoice {
 struct ChunkDelta {
     #[serde(default)]
     content: Option<String>,
+    /// Thinking / chain-of-thought text emitted by reasoning-mode backends.
+    /// Ollama's Qwen3 thinking models stream tokens here with `content=""`.
+    #[serde(default)]
+    reasoning: Option<String>,
+    /// DashScope / DeepSeek-style variant of the same field.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     tool_calls: Vec<DeltaToolCall>,
 }
@@ -1413,13 +1434,13 @@ impl StringExt for String {
 mod tests {
     use super::{
         build_chat_completion_request, chat_completions_endpoint, is_reasoning_model,
-        normalize_finish_reason, openai_tool_choice, parse_tool_arguments, OpenAiCompatClient,
-        OpenAiCompatConfig,
+        normalize_finish_reason, openai_tool_choice, parse_tool_arguments, ChatCompletionChunk,
+        OpenAiCompatClient, OpenAiCompatConfig, StreamState,
     };
     use crate::error::ApiError;
     use crate::types::{
-        InputContentBlock, InputMessage, MessageRequest, ToolChoice, ToolDefinition,
-        ToolResultContentBlock,
+        ContentBlockDelta, ContentBlockDeltaEvent, InputContentBlock, InputMessage, MessageRequest,
+        StreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
     };
     use serde_json::json;
     use std::sync::{Mutex, OnceLock};
@@ -1790,6 +1811,114 @@ mod tests {
             delta.tool_calls.is_empty(),
             "tool_calls:null must produce an empty vec, not an error"
         );
+    }
+
+    /// Regression: Ollama's Qwen3 thinking models stream every token in
+    /// `delta.reasoning` with `delta.content=""`. Before the fallback landed,
+    /// the stream parser emitted zero text and the CLI failed with
+    /// "assistant stream produced no content". Verify that reasoning text is
+    /// surfaced as a `TextDelta` when content is empty/absent.
+    #[test]
+    fn reasoning_delta_falls_back_to_text_when_content_is_empty() {
+        let chunk_json = r#"{
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "qwen3.5:9b",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": "", "reasoning": "Hello"},
+                "finish_reason": null
+            }]
+        }"#;
+        let chunk: ChatCompletionChunk =
+            serde_json::from_str(chunk_json).expect("chunk with reasoning field must deserialize");
+        let mut state = StreamState::new("qwen3.5:9b".to_string());
+        let events = state
+            .ingest_chunk(chunk)
+            .expect("processing reasoning chunk must not error");
+        let has_text_delta = events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
+                    delta: ContentBlockDelta::TextDelta { text },
+                    ..
+                }) if text == "Hello"
+            )
+        });
+        assert!(
+            has_text_delta,
+            "reasoning text must be surfaced as TextDelta when content is empty"
+        );
+    }
+
+    /// Also handle the DashScope/DeepSeek `reasoning_content` variant name.
+    #[test]
+    fn reasoning_content_variant_also_falls_back() {
+        let chunk_json = r#"{
+            "id": "chatcmpl-2",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "deepseek-reasoner",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "reasoning_content": "Think"},
+                "finish_reason": null
+            }]
+        }"#;
+        let chunk: ChatCompletionChunk = serde_json::from_str(chunk_json)
+            .expect("chunk with reasoning_content field must deserialize");
+        let mut state = StreamState::new("deepseek-reasoner".to_string());
+        let events = state
+            .ingest_chunk(chunk)
+            .expect("processing reasoning_content chunk must not error");
+        let has_text_delta = events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
+                    delta: ContentBlockDelta::TextDelta { text },
+                    ..
+                }) if text == "Think"
+            )
+        });
+        assert!(
+            has_text_delta,
+            "reasoning_content must fall back to TextDelta"
+        );
+    }
+
+    /// When both `content` and `reasoning` are present, `content` wins so that
+    /// models emitting real answers don't lose them to a `CoT` trace.
+    #[test]
+    fn content_takes_priority_over_reasoning() {
+        let chunk_json = r#"{
+            "id": "chatcmpl-3",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "qwen3.5:9b",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": "real", "reasoning": "cot"},
+                "finish_reason": null
+            }]
+        }"#;
+        let chunk: ChatCompletionChunk =
+            serde_json::from_str(chunk_json).expect("chunk must deserialize");
+        let mut state = StreamState::new("qwen3.5:9b".to_string());
+        let events = state
+            .ingest_chunk(chunk)
+            .expect("processing must not error");
+        let emitted_texts: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
+                    delta: ContentBlockDelta::TextDelta { text },
+                    ..
+                }) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(emitted_texts, vec!["real"]);
     }
 
     /// Regression: when building a multi-turn request where a prior assistant
@@ -2195,9 +2324,16 @@ mod tests {
 
     #[test]
     fn provider_specific_size_limits_are_correct() {
-        assert_eq!(OpenAiCompatConfig::dashscope().max_request_body_bytes, 6_291_456); // 6MB
-        assert_eq!(OpenAiCompatConfig::openai().max_request_body_bytes, 104_857_600); // 100MB
-        assert_eq!(OpenAiCompatConfig::xai().max_request_body_bytes, 52_428_800); // 50MB
+        assert_eq!(
+            OpenAiCompatConfig::dashscope().max_request_body_bytes,
+            6_291_456
+        ); // 6MB
+        assert_eq!(
+            OpenAiCompatConfig::openai().max_request_body_bytes,
+            104_857_600
+        ); // 100MB
+        assert_eq!(OpenAiCompatConfig::xai().max_request_body_bytes, 52_428_800);
+        // 50MB
     }
 
     #[test]
