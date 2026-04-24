@@ -1472,13 +1472,16 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
             err_msg.push_str("\nDid you mean `openai/");
             err_msg.push_str(trimmed);
             err_msg.push_str("`? (Requires OPENAI_API_KEY env var)");
-        }
-        else if trimmed.starts_with("qwen") {
+        } else if trimmed.starts_with("qwen") {
             err_msg.push_str("\nDid you mean `qwen/");
             err_msg.push_str(trimmed);
             err_msg.push_str("`? (Requires DASHSCOPE_API_KEY env var)");
-        }
-        else if trimmed.starts_with("grok") {
+            err_msg.push_str("\nOr for a local Ollama server: use `openai/");
+            err_msg.push_str(trimmed);
+            err_msg.push_str(
+                "` with OPENAI_BASE_URL=http://127.0.0.1:11434/v1 and OPENAI_API_KEY=ollama",
+            );
+        } else if trimmed.starts_with("grok") {
             err_msg.push_str("\nDid you mean `xai/");
             err_msg.push_str(trimmed);
             err_msg.push_str("`? (Requires XAI_API_KEY env var)");
