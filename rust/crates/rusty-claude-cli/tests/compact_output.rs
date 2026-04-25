@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -172,10 +173,74 @@ stderr:
     );
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
     let parsed: Value = serde_json::from_str(&stdout).expect("compact json stdout should parse");
-    assert_eq!(parsed["message"], "Mock streaming says hello from the parity harness.");
+    assert_eq!(
+        parsed["message"],
+        "Mock streaming says hello from the parity harness."
+    );
     assert_eq!(parsed["compact"], true);
     assert_eq!(parsed["model"], "claude-sonnet-4-6");
     assert!(parsed["usage"].is_object());
+
+    fs::remove_dir_all(&workspace).expect("workspace cleanup should succeed");
+}
+
+/// Regression: when the prompt is piped via stdin (no positional prompt arg),
+/// `--compact` was silently dropped — the parser hardcoded `compact: false`
+/// in the empty-rest branch, dispatching to the interactive `run_turn` path
+/// and leaking the spinner ANSI escape sequences plus the streaming reasoning
+/// trace into stdout. This breaks shell pipelines like
+/// `echo "summarize Cargo.toml" | claw --compact | wc -l` (the documented
+/// usage in --help). Verify that compact mode is honored on the stdin path.
+#[test]
+fn compact_flag_is_honored_when_prompt_arrives_via_stdin_pipe() {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
+    let server = runtime
+        .block_on(MockAnthropicService::spawn())
+        .expect("mock service should start");
+    let base_url = server.base_url();
+
+    let workspace = unique_temp_dir("compact-stdin-pipe");
+    let config_home = workspace.join("config-home");
+    let home = workspace.join("home");
+    fs::create_dir_all(&workspace).expect("workspace should exist");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    fs::create_dir_all(&home).expect("home should exist");
+
+    let prompt = format!("{SCENARIO_PREFIX}streaming_text");
+    let output = run_claw_with_stdin(
+        &workspace,
+        &config_home,
+        &home,
+        &base_url,
+        &[
+            "--model",
+            "sonnet",
+            "--permission-mode",
+            "read-only",
+            "--compact",
+        ],
+        &prompt,
+    );
+
+    assert!(
+        output.status.success(),
+        "compact stdin run should succeed\nstdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    assert_eq!(
+        stdout, "Mock streaming says hello from the parity harness.\n",
+        "compact stdin stdout should contain only the final assistant text"
+    );
+    assert!(
+        !stdout.contains("Thinking"),
+        "compact stdin stdout must not include the spinner banner ({stdout:?})"
+    );
+    assert!(
+        !stdout.contains("\x1b["),
+        "compact stdin stdout must not leak ANSI escape sequences ({stdout:?})"
+    );
 
     fs::remove_dir_all(&workspace).expect("workspace cleanup should succeed");
 }
@@ -199,6 +264,42 @@ fn run_claw(
         .env("PATH", "/usr/bin:/bin")
         .args(args);
     command.output().expect("claw should launch")
+}
+
+/// Run claw with `stdin_input` piped to its stdin — simulates the
+/// `echo "..." | claw --compact` shell idiom used by pipelines.
+fn run_claw_with_stdin(
+    cwd: &std::path::Path,
+    config_home: &std::path::Path,
+    home: &std::path::Path,
+    base_url: &str,
+    args: &[&str],
+    stdin_input: &str,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_claw"));
+    command
+        .current_dir(cwd)
+        .env_clear()
+        .env("ANTHROPIC_API_KEY", "test-compact-key")
+        .env("ANTHROPIC_BASE_URL", base_url)
+        .env("CLAW_CONFIG_HOME", config_home)
+        .env("HOME", home)
+        .env("NO_COLOR", "1")
+        .env("PATH", "/usr/bin:/bin")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("claw should launch");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin pipe should attach");
+        stdin
+            .write_all(stdin_input.as_bytes())
+            .expect("stdin write should succeed");
+    }
+    child
+        .wait_with_output()
+        .expect("claw should run to completion")
 }
 
 fn unique_temp_dir(label: &str) -> PathBuf {

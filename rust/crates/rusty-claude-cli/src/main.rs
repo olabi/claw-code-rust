@@ -822,7 +822,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                     allowed_tools,
                     permission_mode,
                     output_format,
-                    compact: false,
+                    // Honor `--compact` when the prompt is piped via stdin.
+                    // Previously hardcoded `false`, which silently dropped the
+                    // flag and dispatched to the interactive `run_turn` path —
+                    // emitting the spinner ANSI escapes and the streaming
+                    // reasoning trace into pipelines that asked for compact
+                    // (final-text-only) output.
+                    compact,
                     base_commit,
                     reasoning_effort,
                     allow_broad_cwd,
