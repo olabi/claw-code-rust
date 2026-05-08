@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{Display, Formatter};
 
 use serde_json::{Map, Value};
@@ -16,6 +16,12 @@ use crate::session::{ContentBlock, ConversationMessage, Session};
 use crate::usage::{TokenUsage, UsageTracker};
 
 const DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD: u32 = 100_000;
+
+/// Number of consecutive identical tool-call rounds that triggers loop
+/// detection.  When the model emits the exact same set of tool calls
+/// (name + input) for this many iterations in a row, the turn is aborted
+/// to prevent runaway token spend.
+const REPETITION_LIMIT: usize = 4;
 const AUTO_COMPACTION_THRESHOLD_ENV_VAR: &str = "CLAUDE_CODE_AUTO_COMPACT_INPUT_TOKENS";
 
 /// Fully assembled request payload sent to the upstream model client.
@@ -342,6 +348,8 @@ where
         let mut tool_results = Vec::new();
         let mut prompt_cache_events = Vec::new();
         let mut iterations = 0;
+        let mut recent_tool_signatures: VecDeque<Vec<(String, String)>> =
+            VecDeque::with_capacity(REPETITION_LIMIT);
 
         loop {
             iterations += 1;
@@ -399,6 +407,31 @@ where
 
             if pending_tool_uses.is_empty() {
                 break;
+            }
+
+            // --- Loop detection: abort if the model repeats the exact same
+            // set of tool calls for REPETITION_LIMIT consecutive iterations.
+            let current_signature: Vec<(String, String)> = pending_tool_uses
+                .iter()
+                .map(|(_, name, input)| (name.clone(), input.clone()))
+                .collect();
+            if recent_tool_signatures.len() == REPETITION_LIMIT {
+                recent_tool_signatures.pop_front();
+            }
+            recent_tool_signatures.push_back(current_signature.clone());
+            if recent_tool_signatures.len() == REPETITION_LIMIT
+                && recent_tool_signatures.iter().all(|s| *s == current_signature)
+            {
+                let repeated_tools: Vec<&str> =
+                    current_signature.iter().map(|(n, _)| n.as_str()).collect();
+                let error = RuntimeError::new(format!(
+                    "Loop detected: the model repeated the same tool call(s) \
+                     ({}) {} times in a row. Aborting to prevent an infinite loop.",
+                    repeated_tools.join(", "),
+                    REPETITION_LIMIT,
+                ));
+                self.record_turn_failed(iterations, &error);
+                return Err(error);
             }
 
             for (tool_use_id, tool_name, input) in pending_tool_uses {
