@@ -1408,31 +1408,43 @@ fn default_initialize_params() -> McpInitializeParams {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    #[cfg(unix)]
     use std::fs;
     use std::io::ErrorKind;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
+    #[cfg(unix)]
     use std::sync::atomic::{AtomicU64, Ordering};
+    #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(unix)]
     use serde_json::json;
+    #[cfg(unix)]
     use tokio::runtime::Builder;
 
+    #[cfg(unix)]
+    use crate::config::McpStdioServerConfig;
     use crate::config::{
         ConfigSource, McpRemoteServerConfig, McpSdkServerConfig, McpServerConfig,
-        McpStdioServerConfig, McpWebSocketServerConfig, ScopedMcpServerConfig,
+        McpWebSocketServerConfig, ScopedMcpServerConfig,
     };
+    #[cfg(unix)]
     use crate::mcp::mcp_tool_name;
     use crate::mcp_client::McpClientBootstrap;
 
+    use super::{spawn_mcp_stdio_process, unsupported_server_failed_server, McpServerManager};
+    #[cfg(unix)]
     use super::{
-        spawn_mcp_stdio_process, unsupported_server_failed_server, JsonRpcId, JsonRpcRequest,
-        JsonRpcResponse, McpInitializeClientInfo, McpInitializeParams, McpInitializeResult,
-        McpInitializeServerInfo, McpListToolsResult, McpReadResourceParams, McpReadResourceResult,
-        McpServerManager, McpServerManagerError, McpStdioProcess, McpTool, McpToolCallParams,
+        JsonRpcId, JsonRpcRequest, JsonRpcResponse, McpInitializeClientInfo, McpInitializeParams,
+        McpInitializeResult, McpInitializeServerInfo, McpListToolsResult, McpReadResourceParams,
+        McpReadResourceResult, McpServerManagerError, McpStdioProcess, McpTool, McpToolCallParams,
     };
     use crate::McpLifecyclePhase;
 
+    #[cfg(unix)]
     fn temp_dir() -> PathBuf {
         static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
@@ -1443,6 +1455,7 @@ mod tests {
         std::env::temp_dir().join(format!("runtime-mcp-stdio-{nanos}-{unique_id}"))
     }
 
+    #[cfg(unix)]
     fn write_echo_script() -> PathBuf {
         let root = temp_dir();
         fs::create_dir_all(&root).expect("temp dir");
@@ -1458,6 +1471,7 @@ mod tests {
         script_path
     }
 
+    #[cfg(unix)]
     fn write_jsonrpc_script() -> PathBuf {
         let root = temp_dir();
         fs::create_dir_all(&root).expect("temp dir");
@@ -1504,6 +1518,7 @@ mod tests {
         script_path
     }
 
+    #[cfg(unix)]
     #[allow(clippy::too_many_lines)]
     fn write_mcp_server_script() -> PathBuf {
         let root = temp_dir();
@@ -1638,6 +1653,7 @@ mod tests {
         script_path
     }
 
+    #[cfg(unix)]
     #[allow(clippy::too_many_lines)]
     fn write_manager_mcp_server_script() -> PathBuf {
         let root = temp_dir();
@@ -1763,6 +1779,7 @@ mod tests {
         script_path
     }
 
+    #[cfg(unix)]
     fn sample_bootstrap(script_path: &Path) -> McpClientBootstrap {
         let config = ScopedMcpServerConfig {
             scope: ConfigSource::Local,
@@ -1776,10 +1793,12 @@ mod tests {
         McpClientBootstrap::from_scoped_config("stdio server", &config)
     }
 
+    #[cfg(unix)]
     fn script_transport(script_path: &Path) -> crate::mcp_client::McpStdioTransport {
         script_transport_with_env(script_path, BTreeMap::new())
     }
 
+    #[cfg(unix)]
     fn script_transport_with_env(
         script_path: &Path,
         env: BTreeMap<String, String>,
@@ -1792,6 +1811,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn cleanup_script(script_path: &Path) {
         if let Err(error) = fs::remove_file(script_path) {
             assert_eq!(
@@ -1809,6 +1829,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn manager_server_config(
         script_path: &Path,
         label: &str,
@@ -1817,6 +1838,7 @@ mod tests {
         manager_server_config_with_env(script_path, label, log_path, BTreeMap::new())
     }
 
+    #[cfg(unix)]
     fn manager_server_config_with_env(
         script_path: &Path,
         label: &str,
@@ -1842,6 +1864,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawns_stdio_process_and_round_trips_io() {
         let runtime = Builder::new_current_thread()
@@ -1884,6 +1907,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
     }
 
+    #[cfg(unix)]
     #[test]
     fn round_trips_initialize_request_and_response_over_stdio_frames() {
         let runtime = Builder::new_current_thread()
@@ -1931,6 +1955,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn write_jsonrpc_request_emits_content_length_frame() {
         let runtime = Builder::new_current_thread()
@@ -1965,6 +1990,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn given_lowercase_content_length_when_initialize_then_response_parses() {
         let runtime = Builder::new_current_thread()
@@ -2005,6 +2031,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn given_mismatched_response_id_when_initialize_then_invalid_data_is_returned() {
         let runtime = Builder::new_current_thread()
@@ -2044,6 +2071,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn direct_spawn_uses_transport_env() {
         let runtime = Builder::new_current_thread()
@@ -2068,6 +2096,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn lists_tools_calls_tool_and_reads_resources_over_jsonrpc() {
         let runtime = Builder::new_current_thread()
@@ -2168,6 +2197,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn surfaces_jsonrpc_errors_from_tool_calls() {
         let runtime = Builder::new_current_thread()
@@ -2205,6 +2235,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_discovers_tools_from_stdio_config() {
         let runtime = Builder::new_current_thread()
@@ -2235,6 +2266,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_routes_tool_calls_to_correct_server() {
         let runtime = Builder::new_current_thread()
@@ -2297,6 +2329,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_times_out_slow_tool_calls() {
         let runtime = Builder::new_current_thread()
@@ -2352,6 +2385,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_surfaces_parse_errors_from_tool_calls() {
         let runtime = Builder::new_current_thread()
@@ -2406,6 +2440,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn given_child_exits_after_discovery_when_calling_twice_then_second_call_succeeds_after_reset()
     {
@@ -2477,6 +2512,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn given_initialize_hangs_once_when_discover_tools_then_manager_retries_and_succeeds() {
         let runtime = Builder::new_current_thread()
@@ -2526,6 +2562,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn given_tool_call_disconnects_once_when_calling_twice_then_manager_resets_and_next_call_succeeds(
     ) {
@@ -2614,6 +2651,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_lists_and_reads_resources_from_stdio_servers() {
         let runtime = Builder::new_current_thread()
@@ -2652,6 +2690,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     fn write_initialize_disconnect_script() -> PathBuf {
         let root = temp_dir();
         fs::create_dir_all(&root).expect("temp dir");
@@ -2682,6 +2721,7 @@ mod tests {
         script_path
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_discovery_report_keeps_healthy_servers_when_one_server_fails() {
         let runtime = Builder::new_current_thread()
@@ -2821,6 +2861,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_shutdown_terminates_spawned_children_and_is_idempotent() {
         let runtime = Builder::new_current_thread()
@@ -2845,6 +2886,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_reuses_spawned_server_between_discovery_and_call() {
         let runtime = Builder::new_current_thread()
@@ -2891,6 +2933,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn manager_reports_unknown_qualified_tool_name() {
         let runtime = Builder::new_current_thread()

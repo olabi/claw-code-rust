@@ -66,12 +66,12 @@ const DEFAULT_MODEL: &str = "claude-opus-4-6";
 enum ModelSource {
     /// Explicit `--model` / `--model=` CLI flag.
     Flag,
-    /// ANTHROPIC_MODEL environment variable (when no flag was passed).
+    /// `ANTHROPIC_MODEL` environment variable (when no flag was passed).
     Env,
     /// `model` key in `.claw.json` / `.claw/settings.json` (when neither
     /// flag nor env set it).
     Config,
-    /// Compiled-in DEFAULT_MODEL fallback.
+    /// Compiled-in `DEFAULT_MODEL` fallback.
     Default,
 }
 
@@ -247,7 +247,7 @@ Run `claw --help` for usage."
 
 /// #77: Classify a stringified error message into a machine-readable kind.
 ///
-/// Returns a snake_case token that downstream consumers can switch on instead
+/// Returns a `snake_case` token that downstream consumers can switch on instead
 /// of regex-scraping the prose. The classification is best-effort prefix/keyword
 /// matching against the error messages produced throughout the CLI surface.
 fn classify_error_kind(message: &str) -> &'static str {
@@ -281,9 +281,9 @@ fn classify_error_kind(message: &str) -> &'static str {
     }
 }
 
-/// #77: Split a multi-line error message into (short_reason, optional_hint).
+/// #77: Split a multi-line error message into (`short_reason`, `optional_hint`).
 ///
-/// The short_reason is the first line (up to the first newline), and the hint
+/// The `short_reason` is the first line (up to the first newline), and the hint
 /// is the remaining text or `None` if there's no newline. This prevents the
 /// runbook prose from being stuffed into the `error` field that downstream
 /// parsers expect to be the short reason alone.
@@ -333,6 +333,7 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
     format!("{prompt}\n\n{trimmed}")
 }
 
+#[allow(clippy::too_many_lines)]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_args(&args)? {
@@ -1295,7 +1296,7 @@ fn omc_compatibility_note_for_unknown_slash_command(name: &str) -> Option<&'stat
 }
 
 fn render_suggestion_line(label: &str, suggestions: &[String]) -> Option<String> {
-    (!suggestions.is_empty()).then(|| format!("  {label:<16} {}", suggestions.join(", "),))
+    (!suggestions.is_empty()).then(|| format!("  {label:<16} {}", suggestions.join(", ")))
 }
 
 fn suggest_slash_commands(input: &str) -> Vec<String> {
@@ -1462,8 +1463,7 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
     // Check for spaces (malformed)
     if trimmed.contains(' ') {
         return Err(format!(
-            "invalid model syntax: '{}' contains spaces. Use provider/model format or known alias",
-            trimmed
+            "invalid model syntax: '{trimmed}' contains spaces. Use provider/model format or known alias",
         ));
     }
     // Check provider/model format: provider_id/model_id
@@ -1471,8 +1471,7 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         // #154: hint if the model looks like it belongs to a different provider
         let mut err_msg = format!(
-            "invalid model syntax: '{}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",
-            trimmed
+            "invalid model syntax: '{trimmed}'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)",
         );
         if trimmed.starts_with("gpt-") || trimmed.starts_with("gpt_") {
             err_msg.push_str("\nDid you mean `openai/");
@@ -5622,8 +5621,7 @@ fn format_status_report(
             Some(raw) if raw != model => {
                 format!("\n  Model source     {} (raw: {raw})", p.source.as_str())
             }
-            Some(_) => format!("\n  Model source     {}", p.source.as_str()),
-            None => format!("\n  Model source     {}", p.source.as_str()),
+            Some(_) | None => format!("\n  Model source     {}", p.source.as_str()),
         })
         .unwrap_or_default();
     blocks.extend([
@@ -6059,7 +6057,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
             } else {
                 preview
             };
-            lines.push(format!("  {}. {}", index + 1, file.path.display(),));
+            lines.push(format!("  {}. {}", index + 1, file.path.display()));
             lines.push(format!(
                 "     lines={} preview={}",
                 file.content.lines().count(),
@@ -6151,8 +6149,7 @@ fn render_diff_report_for(cwd: &Path) -> Result<String, Box<dyn std::error::Erro
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(cwd)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok_and(|o| o.status.success());
     if !in_git_repo {
         return Ok(format!(
             "Diff\n  Result           no git repository\n  Detail           {} is not inside a git project",
@@ -6184,8 +6181,7 @@ fn render_diff_json_for(cwd: &Path) -> Result<serde_json::Value, Box<dyn std::er
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(cwd)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok_and(|o| o.status.success());
     if !in_git_repo {
         return Ok(serde_json::json!({
             "kind": "diff",
@@ -6413,8 +6409,7 @@ fn command_exists(name: &str) -> bool {
     Command::new("which")
         .arg(name)
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success())
 }
 
 fn write_temp_text_file(
@@ -7518,6 +7513,7 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
     Ok(resolve_cli_auth_source_for_cwd()?)
 }
 
+#[allow(clippy::result_large_err)]
 fn resolve_cli_auth_source_for_cwd() -> Result<AuthSource, api::ApiError> {
     resolve_startup_auth_source(|| Ok(None))
 }
@@ -9839,6 +9835,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn removed_login_and_logout_subcommands_error_helpfully() {
         let login = parse_args(&["login".to_string()]).expect_err("login should be removed");
         assert!(login.contains("ANTHROPIC_API_KEY"));
@@ -10019,7 +10016,7 @@ mod tests {
         // path (where they surface a misleading "missing Anthropic
         // credentials" error or burn API tokens on an empty prompt).
         let empty_err =
-            parse_args(&["".to_string()]).expect_err("empty positional arg should be rejected");
+            parse_args(&[String::new()]).expect_err("empty positional arg should be rejected");
         assert!(
             empty_err.starts_with("empty prompt:"),
             "empty-arg error should be specific, got: {empty_err}"
@@ -10030,7 +10027,7 @@ mod tests {
             whitespace_err.starts_with("empty prompt:"),
             "whitespace-only error should be specific, got: {whitespace_err}"
         );
-        let multi_empty_err = parse_args(&["".to_string(), "".to_string()])
+        let multi_empty_err = parse_args(&[String::new(), String::new()])
             .expect_err("multiple empty positional args should be rejected");
         assert!(
             multi_empty_err.starts_with("empty prompt:"),

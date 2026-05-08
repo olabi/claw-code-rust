@@ -327,8 +327,9 @@ fn jitter_for_base(base: Duration) -> Duration {
     }
     let raw_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        });
     let tick = JITTER_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut mixed = raw_nanos
         .wrapping_add(tick)
@@ -766,7 +767,7 @@ struct ChunkDelta {
     /// Ollama's Qwen3 thinking models stream tokens here with `content=""`.
     #[serde(default)]
     reasoning: Option<String>,
-    /// DashScope / DeepSeek-style variant of the same field.
+    /// `DashScope` / DeepSeek-style variant of the same field.
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
