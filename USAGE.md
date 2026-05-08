@@ -251,18 +251,25 @@ export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 export OPENAI_API_KEY="local-dev-token"
 
 cd rust
-./target/debug/claw --model "qwen2.5-coder" prompt "reply with the word ready"
+./target/debug/claw --model "openai/qwen2.5-coder" prompt "reply with the word ready"
 ```
+
+**Note:** The `openai/` prefix is required for models that are not built-in aliases (`opus`, `sonnet`, `haiku`, `grok`, etc.). It tells the provider router to use the OpenAI-compatible backend. Without it, the CLI rejects the model name with an `invalid_model_syntax` error.
 
 ### Ollama
 
 ```bash
 export OPENAI_BASE_URL="http://127.0.0.1:11434/v1"
-unset OPENAI_API_KEY
+export OPENAI_API_KEY="ollama"
 
 cd rust
-./target/debug/claw --model "llama3.2" prompt "summarize this repository in one sentence"
+./target/debug/claw --model "openai/llama3.2" prompt "summarize this repository in one sentence"
 ```
+
+**Important:**
+- The `openai/` prefix is **required** — bare model names like `llama3.2` are rejected at parse time.
+- `OPENAI_BASE_URL` must include the `/v1` suffix. The CLI appends `/chat/completions`, so without `/v1` the request hits Ollama's root path and returns a 404.
+- `OPENAI_API_KEY` can be any non-empty string (Ollama ignores it). Setting it to `"ollama"` is a common convention.
 
 ### OpenRouter
 
@@ -321,7 +328,7 @@ These are the models registered in the built-in alias table with known token lim
 | `grok-mini` / `grok-3-mini` | `grok-3-mini` | xAI | 64 000 | 131 072 |
 | `grok-2` | `grok-2` | xAI | — | — |
 
-Any model name that does not match an alias is passed through verbatim. This is how you use OpenRouter model slugs (`openai/gpt-4.1-mini`), Ollama tags (`llama3.2`), or full Anthropic model IDs (`claude-sonnet-4-20250514`).
+Any model name that does not match an alias is passed through verbatim, but **must include a provider prefix** (e.g., `openai/`, `qwen/`). This is how you use OpenRouter model slugs (`openai/gpt-4.1-mini`), Ollama tags (`openai/llama3.2`), DashScope models (`qwen/qwen-max`), or full Anthropic model IDs (`claude-sonnet-4-20250514`).
 
 ### User-defined aliases
 
@@ -341,10 +348,15 @@ Local project settings override user-level settings. Aliases resolve through the
 
 ### How provider detection works
 
-1. If the resolved model name starts with `claude` → Anthropic.
-2. If it starts with `grok` → xAI.
-3. Otherwise, `claw` checks which credential is set: `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` first, then `OPENAI_API_KEY`, then `XAI_API_KEY`.
-4. If nothing matches, it defaults to Anthropic.
+1. If the model name starts with `openai/` or `gpt-` → OpenAI-compatible.
+2. If it starts with `qwen/` or `qwen-` → DashScope (Alibaba).
+3. If it starts with `kimi/` or `kimi-` → DashScope.
+4. If it starts with `claude` → Anthropic.
+5. If it starts with `grok` → xAI.
+6. Otherwise, `claw` checks which credential env var is set: `OPENAI_BASE_URL`+`OPENAI_API_KEY` first, then `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`, then `OPENAI_API_KEY` alone, then `XAI_API_KEY`.
+7. If nothing matches, it defaults to Anthropic.
+
+**For local models (Ollama, LM Studio, vLLM):** always use the `openai/` prefix (e.g., `openai/llama3.2`, `openai/qwen3.5:9b`). Bare model names without a recognized prefix are rejected with an `invalid_model_syntax` error.
 
 ## FAQ
 
