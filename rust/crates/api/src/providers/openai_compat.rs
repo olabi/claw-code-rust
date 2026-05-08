@@ -393,6 +393,9 @@ impl MessageStream {
                     for parsed in self.parser.push(&chunk)? {
                         self.pending.extend(self.state.ingest_chunk(parsed)?);
                     }
+                    if self.parser.is_done() {
+                        self.done = true;
+                    }
                 }
                 None => {
                     self.done = true;
@@ -407,6 +410,7 @@ struct OpenAiSseParser {
     buffer: Vec<u8>,
     provider: String,
     model: String,
+    done: bool,
 }
 
 impl OpenAiSseParser {
@@ -415,7 +419,12 @@ impl OpenAiSseParser {
             buffer: Vec::new(),
             provider: provider.into(),
             model: model.into(),
+            done: false,
         }
+    }
+
+    fn is_done(&self) -> bool {
+        self.done
     }
 
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<ChatCompletionChunk>, ApiError> {
@@ -423,6 +432,10 @@ impl OpenAiSseParser {
         let mut events = Vec::new();
 
         while let Some(frame) = next_sse_frame(&mut self.buffer) {
+            if is_done_frame(&frame) {
+                self.done = true;
+                break;
+            }
             if let Some(event) = parse_sse_frame(&frame, &self.provider, &self.model)? {
                 events.push(event);
             }
@@ -1242,6 +1255,25 @@ fn normalize_response(
 
 fn parse_tool_arguments(arguments: &str) -> Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| json!({ "raw": arguments }))
+}
+
+/// Returns `true` when the SSE frame is the `data: [DONE]` sentinel that
+/// signals the end of the stream.  Ollama keeps the TCP socket alive via
+/// HTTP keep-alive, so we must detect this frame explicitly rather than
+/// relying on the connection closing.
+fn is_done_frame(frame: &str) -> bool {
+    let trimmed = frame.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    for line in trimmed.lines() {
+        if let Some(data) = line.strip_prefix("data:") {
+            if data.trim() == "[DONE]" {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn next_sse_frame(buffer: &mut Vec<u8>) -> Option<String> {
